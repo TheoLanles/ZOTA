@@ -86,8 +86,7 @@ class MainWindow(QMainWindow):
             msg_box.setInformativeText("Veuillez redémarrer l'application pour appliquer les changements.")
             msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
             msg_box.exec()
-            # Optionnellement, fermer l'application automatiquement
-            # self.close()
+            self.close()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
