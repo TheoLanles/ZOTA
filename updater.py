@@ -4,8 +4,10 @@ import os
 import sys
 import json
 import requests
+import hashlib # Importation pour le calcul du hachage
+import shutil  # Importation pour les opérations de copie de fichier
 from time import sleep
-from packaging.version import parse, Version # Importation de parse et Version
+from packaging.version import parse, Version
 
 # Importations PyQt6 nécessaires pour les signaux
 from PyQt6.QtCore import QObject, pyqtSignal
@@ -76,6 +78,14 @@ class Updater(QObject):
         except requests.ConnectionError:
             return False
 
+    def _calculate_sha256(self, filepath: str) -> str:
+        """Calcule le hachage SHA256 d'un fichier."""
+        hasher = hashlib.sha256()
+        with open(filepath, 'rb') as f:
+            while chunk := f.read(8192): # Lire par blocs pour les grands fichiers
+                hasher.update(chunk)
+        return hasher.hexdigest()
+
     def download_and_install_update(self):
         """
         Méthode principale qui orchestre le processus de mise à jour.
@@ -91,13 +101,19 @@ class Updater(QObject):
         self.status_update.emit("Recherche de mises à jour...")
 
         try:
-            # 1. Obtenir la dernière version depuis le dépôt
+            # 1. Obtenir la dernière version et le hachage SHA256 depuis le dépôt
             response = requests.get(self.version_url)
             response.raise_for_status()  # Lève une exception pour les codes d'erreur HTTP
 
-            # IMPORTANT : Parser la version distante en objet Version pour une comparaison correcte
-            latest_version_str = response.json().get('version', '0.0.0')
-            latest_version = parse(str(latest_version_str)) # Assurez-vous que c'est une chaîne avant de parser
+            remote_version_data = response.json()
+            latest_version_str = remote_version_data.get('version', '0.0.0')
+            latest_version = parse(str(latest_version_str))
+            expected_checksum = remote_version_data.get('sha256_checksum', None)
+
+            if not expected_checksum:
+                self.status_update.emit("Erreur : Hachage SHA256 manquant dans version.json distant.")
+                self.update_finished.emit(False, "Échec : Hachage de sécurité manquant.")
+                return
 
             self.status_update.emit(f"Dernière version disponible : {latest_version}")
 
@@ -118,12 +134,27 @@ class Updater(QObject):
             with open(temp_filename, 'w', encoding='utf-8') as f:
                 f.write(latest_code)
 
-            # 5. Mettre à jour le fichier de version local avec la nouvelle version
+            # 5. Vérifier l'intégrité du fichier téléchargé
+            self.status_update.emit("Vérification de l'intégrité du fichier téléchargé...")
+            calculated_checksum = self._calculate_sha256(temp_filename)
+            if calculated_checksum != expected_checksum:
+                os.remove(temp_filename) # Supprimer le fichier corrompu
+                self.status_update.emit(f"Erreur : Hachage SHA256 non concordant. Attendu : {expected_checksum}, Obtenu : {calculated_checksum}")
+                self.update_finished.emit(False, "Échec : Échec de la vérification d'intégrité.")
+                return
+
+            # 6. Sauvegarder l'ancien fichier avant de le remplacer
+            if os.path.exists(self.filename_to_update):
+                backup_filename = f"{self.filename_to_update}.bak"
+                self.status_update.emit(f"Création d'une sauvegarde de l'ancien fichier : {backup_filename}...")
+                shutil.copyfile(self.filename_to_update, backup_filename)
+                self.status_update.emit("Sauvegarde créée avec succès.")
+
+            # 7. Mettre à jour le fichier de version local avec la nouvelle version
             with open('version.json', 'w') as f:
                 json.dump({'version': str(latest_version)}, f) # Sauvegarde en tant que chaîne
 
-            # 6. Remplacer l'ancien fichier par le nouveau
-            # Cette opération est critique. Si elle échoue, l'application peut être corrompue.
+            # 8. Remplacer l'ancien fichier par le nouveau
             self.status_update.emit(f"Installation de la mise à jour (remplacement de {self.filename_to_update})...")
             os.replace(temp_filename, self.filename_to_update) # os.replace est atomique sur la plupart des OS
 
@@ -131,10 +162,10 @@ class Updater(QObject):
             self.update_finished.emit(True, "Mise à jour installée avec succès !")
 
         except requests.exceptions.RequestException as e:
-            self.status_update.emit(f"Erreur réseau : {e}")
-            self.update_finished.emit(False, f"Échec de la mise à jour : {e}")
-        except (KeyError, json.JSONDecodeError):
-            self.status_update.emit("Erreur : le fichier version.json distant est mal formé ou la clé 'version' est manquante.")
+            self.status_update.emit(f"Erreur réseau ou HTTP : {e}")
+            self.update_finished.emit(False, f"Échec de la mise à jour (réseau) : {e}")
+        except (KeyError, json.JSONDecodeError) as e:
+            self.status_update.emit(f"Erreur : le fichier version.json distant est mal formé ou une clé est manquante : {e}")
             self.update_finished.emit(False, "Échec : Fichier de version distant invalide.")
         except Exception as e:
             # Capture toutes les autres exceptions inattendues
