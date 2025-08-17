@@ -22,7 +22,7 @@ FILENAME_TO_UPDATE = "main_app.py"
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Application avec mise à jour ota")
+        self.setWindowTitle("Application avec mise à jour ota de test")
         self.setGeometry(100, 100, 400, 200)
 
         # Création de l'interface
